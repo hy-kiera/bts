@@ -30,7 +30,7 @@ def download_file_from_google_drive(id, destination):
         params = { 'id' : id, 'confirm' : token }
         response = session.get(URL, params = params, stream = True)
 
-    save_response_content(response, destination)    
+    save_response_content(response, destination)
 
 
 if __name__ == "__main__":
@@ -39,7 +39,7 @@ if __name__ == "__main__":
         print("Usage: python google_drive.py drive_file_id destination_file_path")
     else:
         # TAKE ID FROM SHAREABLE LINK
-        file_id = sys.argv[1]
+        file_id = sys.argv[1] # 1AysroWpfISmm-yRFGBgFTrLy6FjQwvwP
         # DESTINATION FILE ON YOUR DISK
-        destination = sys.argv[2]
+        destination = sys.argv[2] # ../dataset/nyu_depth_v2/sync.zip
         download_file_from_google_drive(file_id, destination)

@@ -22,6 +22,7 @@ from torchvision import transforms
 from PIL import Image
 import os
 import random
+import scipy.io as sio
 
 from distributed_sampler_no_evenly_divisible import *
 
@@ -79,108 +80,117 @@ class BtsDataLoader(object):
 class DataLoadPreprocess(Dataset):
     def __init__(self, args, mode, transform=None, is_for_online_eval=False):
         self.args = args
-        if mode == 'online_eval':
-            with open(args.filenames_file_eval, 'r') as f:
-                self.filenames = f.readlines()
-        else:
-            with open(args.filenames_file, 'r') as f:
-                self.filenames = f.readlines()
-    
+        # if mode == 'online_eval':
+        #     with open(args.filenames_file_eval, 'r') as f:
+        #         self.filenames = f.readlines()
+        # else:
+        #     with open(args.filenames_file, 'r') as f:
+        #         self.filenames = f.readlines()
+        self.data = sio.loadmat(args.data_path)
+
         self.mode = mode
-        self.transform = transform
-        self.to_tensor = ToTensor
-        self.is_for_online_eval = is_for_online_eval
+        # self.transform = transform
+        # self.to_tensor = ToTensor
+        # self.is_for_online_eval = is_for_online_eval
     
     def __getitem__(self, idx):
-        sample_path = self.filenames[idx]
-        focal = float(sample_path.split()[2])
+        # sample_path = self.filenames[idx]
+        images = np.array(self.data["UV"]) # N, H, W, C(2) - range [0, 1]
+        depth_gts = np.array(self.data["D"]) # N, H, W
+        depth_masks = np.array(self.data["M"]) # N, H, W, 1 - 0 or 1
 
         if self.mode == 'train':
-            if self.args.dataset == 'kitti' and self.args.use_right is True and random.random() > 0.5:
-                image_path = os.path.join(self.args.data_path, "./" + sample_path.split()[3])
-                depth_path = os.path.join(self.args.gt_path, "./" + sample_path.split()[4])
-            else:
-                image_path = os.path.join(self.args.data_path, "./" + sample_path.split()[0])
-                depth_path = os.path.join(self.args.gt_path, "./" + sample_path.split()[1])
+            # if self.args.dataset == 'kitti' and self.args.use_right is True and random.random() > 0.5:
+            #     image_path = os.path.join(self.args.data_path, "./" + sample_path.split()[3])
+            #     depth_path = os.path.join(self.args.gt_path, "./" + sample_path.split()[4])
+            # else:
+            #     image_path = os.path.join(self.args.data_path, "./" + sample_path.split()[0])
+            #     depth_path = os.path.join(self.args.gt_path, "./" + sample_path.split()[1])
     
-            image = Image.open(image_path)
-            depth_gt = Image.open(depth_path)
+            # image = Image.open(image_path)
+            # depth_gt = Image.open(depth_path)
             
-            if self.args.do_kb_crop is True:
-                height = image.height
-                width = image.width
-                top_margin = int(height - 352)
-                left_margin = int((width - 1216) / 2)
-                depth_gt = depth_gt.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
-                image = image.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
+            # if self.args.do_kb_crop is True:
+            #     height = image.height
+            #     width = image.width
+            #     top_margin = int(height - 352)
+            #     left_margin = int((width - 1216) / 2)
+            #     depth_gt = depth_gt.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
+            #     image = image.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
             
             # To avoid blank boundaries due to pixel registration
-            if self.args.dataset == 'nyu':
-                depth_gt = depth_gt.crop((43, 45, 608, 472))
-                image = image.crop((43, 45, 608, 472))
+            # if self.args.dataset == 'nyu':
+            #     depth_gt = depth_gt.crop((43, 45, 608, 472))
+            #     image = image.crop((43, 45, 608, 472))
     
-            if self.args.do_random_rotate is True:
-                random_angle = (random.random() - 0.5) * 2 * self.args.degree
-                image = self.rotate_image(image, random_angle)
-                depth_gt = self.rotate_image(depth_gt, random_angle, flag=Image.NEAREST)
+            # if self.args.do_random_rotate is True:
+            #     random_angle = (random.random() - 0.5) * 2 * self.args.degree
+            #     image = self.rotate_image(image, random_angle)
+            #     depth_gt = self.rotate_image(depth_gt, random_angle, flag=Image.NEAREST)
             
-            image = np.asarray(image, dtype=np.float32) / 255.0
-            depth_gt = np.asarray(depth_gt, dtype=np.float32)
-            depth_gt = np.expand_dims(depth_gt, axis=2)
+            # image = np.asarray(image, dtype=np.float32) / 255.0
+            # depth_gt = np.asarray(depth_gt, dtype=np.float32)
+
+            image = images[idx]
+            depth_gt = depth_gts[idx]
+
+            depth_gt = np.expand_dims(depth_gt, axis=2) # why 2...?
 
             if self.args.dataset == 'nyu':
                 depth_gt = depth_gt / 1000.0
             else:
                 depth_gt = depth_gt / 256.0
 
-            image, depth_gt = self.random_crop(image, depth_gt, self.args.input_height, self.args.input_width)
-            image, depth_gt = self.train_preprocess(image, depth_gt)
-            sample = {'image': image, 'depth': depth_gt, 'focal': focal}
+            # image, depth_gt = self.random_crop(image, depth_gt, self.args.input_height, self.args.input_width)
+            # image, depth_gt = self.train_preprocess(image, depth_gt)
+            sample = {'image': image, 'depth': depth_gt}
         
         else:
-            if self.mode == 'online_eval':
-                data_path = self.args.data_path_eval
-            else:
-                data_path = self.args.data_path
+            # if self.mode == 'online_eval':
+            #     data_path = self.args.data_path_eval
+            # else:
+            #     data_path = self.args.data_path
 
-            image_path = os.path.join(data_path, "./" + sample_path.split()[0])
-            image = np.asarray(Image.open(image_path), dtype=np.float32) / 255.0
+            # image_path = os.path.join(data_path, "./" + sample_path.split()[0])
+            # image = np.asarray(Image.open(image_path), dtype=np.float32) / 255.0
+            image = images[idx]
 
             if self.mode == 'online_eval':
-                gt_path = self.args.gt_path_eval
-                depth_path = os.path.join(gt_path, "./" + sample_path.split()[1])
+                # gt_path = self.args.gt_path_eval
+                # depth_path = os.path.join(gt_path, "./" + sample_path.split()[1])
                 has_valid_depth = False
                 try:
-                    depth_gt = Image.open(depth_path)
+                    # depth_gt = Image.open(depth_path)
+                    depth_gt = depth_gts[idx]
                     has_valid_depth = True
                 except IOError:
                     depth_gt = False
                     # print('Missing gt for {}'.format(image_path))
 
                 if has_valid_depth:
-                    depth_gt = np.asarray(depth_gt, dtype=np.float32)
+                    # depth_gt = np.asarray(depth_gt, dtype=np.float32)
                     depth_gt = np.expand_dims(depth_gt, axis=2)
                     if self.args.dataset == 'nyu':
                         depth_gt = depth_gt / 1000.0
                     else:
                         depth_gt = depth_gt / 256.0
 
-            if self.args.do_kb_crop is True:
-                height = image.shape[0]
-                width = image.shape[1]
-                top_margin = int(height - 352)
-                left_margin = int((width - 1216) / 2)
-                image = image[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
-                if self.mode == 'online_eval' and has_valid_depth:
-                    depth_gt = depth_gt[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
+            # if self.args.do_kb_crop is True:
+            #     height = image.shape[0]
+            #     width = image.shape[1]
+            #     top_margin = int(height - 352)
+            #     left_margin = int((width - 1216) / 2)
+            #     image = image[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
+            #     if self.mode == 'online_eval' and has_valid_depth:
+            #         depth_gt = depth_gt[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
             
             if self.mode == 'online_eval':
-                sample = {'image': image, 'depth': depth_gt, 'focal': focal, 'has_valid_depth': has_valid_depth}
+                sample = {'image': image, 'depth': depth_gt, 'has_valid_depth': has_valid_depth}
             else:
-                sample = {'image': image, 'focal': focal}
+                sample = {'image': image}
         
-        if self.transform:
-            sample = self.transform(sample)
+        # if self.transform:
+            # sample = self.transform(sample)
         
         return sample
     
@@ -244,20 +254,20 @@ class ToTensor(object):
         self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
     def __call__(self, sample):
-        image, focal = sample['image'], sample['focal']
+        image = sample['image']
         image = self.to_tensor(image)
         image = self.normalize(image)
 
         if self.mode == 'test':
-            return {'image': image, 'focal': focal}
+            return {'image': image}
 
         depth = sample['depth']
         if self.mode == 'train':
             depth = self.to_tensor(depth)
-            return {'image': image, 'depth': depth, 'focal': focal}
+            return {'image': image, 'depth': depth}
         else:
             has_valid_depth = sample['has_valid_depth']
-            return {'image': image, 'depth': depth, 'focal': focal, 'has_valid_depth': has_valid_depth}
+            return {'image': image, 'depth': depth, 'has_valid_depth': has_valid_depth}
     
     def to_tensor(self, pic):
         if not (_is_pil_image(pic) or _is_numpy_image(pic)):
