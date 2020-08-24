@@ -21,6 +21,7 @@ import math
 
 from collections import namedtuple
 
+import numpy as np
 
 # This sets the batch norm layers in pytorch as if {'is_training': False, 'scale': True} in tensorflow
 def bn_init_as_tf(m):
@@ -301,6 +302,7 @@ class encoder(nn.Module):
         for k, v in self.base_model._modules.items():
             if 'fc' in k or 'avgpool' in k:
                 continue
+            print("v : {}".format(v))
             feature = v(features[-1])
             features.append(feature)
             if any(x in k for x in self.feat_names):

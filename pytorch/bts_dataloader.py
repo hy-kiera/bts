@@ -45,24 +45,26 @@ class BtsDataLoader(object):
     def __init__(self, args, mode):
         if mode == 'train':
             self.training_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
-            if args.distributed:
-                self.train_sampler = torch.utils.data.distributed.DistributedSampler(self.training_samples)
-            else:
-                self.train_sampler = None
+            # if args.distributed:
+            #     self.train_sampler = torch.utils.data.distributed.DistributedSampler(self.training_samples)
+            # else:
+            self.train_sampler = None
     
             self.data = DataLoader(self.training_samples, args.batch_size,
                                    shuffle=(self.train_sampler is None),
-                                   num_workers=args.num_threads,
+                                   # num_workers=args.num_threads,
+                                   num_workers=1,
                                    pin_memory=True,
                                    sampler=self.train_sampler)
 
         elif mode == 'online_eval':
             self.testing_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
-            if args.distributed:
+            # if args.distributed:
                 # self.eval_sampler = torch.utils.data.distributed.DistributedSampler(self.testing_samples, shuffle=False)
-                self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
-            else:
-                self.eval_sampler = None
+                # self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
+            # else:
+            self.eval_sampler = None
+            
             self.data = DataLoader(self.testing_samples, 1,
                                    shuffle=False,
                                    num_workers=1,
@@ -92,7 +94,9 @@ class DataLoadPreprocess(Dataset):
         # self.transform = transform
         # self.to_tensor = ToTensor
         # self.is_for_online_eval = is_for_online_eval
-    
+        # self.size = np.array(self.data["UV"]).shape[0]
+        self.size = 191 # KinectPaper_Sparse
+
     def __getitem__(self, idx):
         # sample_path = self.filenames[idx]
         images = np.array(self.data["UV"]) # N, H, W, C(2) - range [0, 1]
@@ -131,7 +135,9 @@ class DataLoadPreprocess(Dataset):
             # image = np.asarray(image, dtype=np.float32) / 255.0
             # depth_gt = np.asarray(depth_gt, dtype=np.float32)
 
-            image = images[idx]
+            tmp = np.zeros((160, 160))
+            image = np.dstack([images[idx], tmp])
+
             depth_gt = depth_gts[idx]
 
             depth_gt = np.expand_dims(depth_gt, axis=2) # why 2...?
@@ -153,7 +159,8 @@ class DataLoadPreprocess(Dataset):
 
             # image_path = os.path.join(data_path, "./" + sample_path.split()[0])
             # image = np.asarray(Image.open(image_path), dtype=np.float32) / 255.0
-            image = images[idx]
+            tmp = np.zeros((160, 160))
+            image = np.dstack([images[idx], tmp])
 
             if self.mode == 'online_eval':
                 # gt_path = self.args.gt_path_eval
@@ -245,7 +252,7 @@ class DataLoadPreprocess(Dataset):
         return image_aug
     
     def __len__(self):
-        return len(self.filenames)
+        return self.size 
 
 
 class ToTensor(object):

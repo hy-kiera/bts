@@ -2,25 +2,25 @@
 --model_name bts_kinectpaper
 --encoder densenet161_bts
 --dataset kinectpaper
---data_path ../../dataset/
+--data_path ../dataset/KinectPaper_Sparse_160.mat
 
+--gpu 4
 
---batch_size 4
+--batch_size 2 
 --num_epochs 50
 --learning_rate 1e-4
 --weight_decay 1e-2
 --adam_eps 1e-3
 --input_height 160
 --input_width 160
---max_depth
---log_directory ./models/
+--max_depth 10
+--log_directory ./models/sparse_log
 
 --log_freq 100
 --do_online_eval
 --eval_freq 500
---data_path_eval ../../dataset/
+--data_path_eval ../dataset/KinectPaper_Sparse_160.mat
 
 --min_depth_eval 1e-3
 --max_depth_eval 3
---eval_summary_directory ./models/eval
---eigen_crop
+--eval_summary_directory ./models/eval/sparse_eval

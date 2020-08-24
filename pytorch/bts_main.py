@@ -95,7 +95,7 @@ parser.add_argument('--use_right',                             help='if set, wil
 # parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
 # parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
 # parser.add_argument('--dist_backend',              type=str,   help='distributed backend', default='nccl')
-# parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=None)
+parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=None)
 # parser.add_argument('--multiprocessing_distributed',           help='Use multi-processing distributed training to launch '
 #                                                                     'N processes per node, which has N GPUs. This is the '
 #                                                                     'fastest way to use PyTorch for either single node or '
@@ -303,23 +303,22 @@ def online_eval(model, dataloader_eval, gpu, ngpus):
     dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
 
     # if not args.multiprocessing_distributed or gpu == 0:
-    if gpu == 0:
-        eval_measures_cpu = eval_measures.cpu()
-        cnt = eval_measures_cpu[9].item()
-        eval_measures_cpu /= cnt
-        print('Computing errors for {} eval samples'.format(int(cnt)))
-        print("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
+    eval_measures_cpu = eval_measures.cpu()
+    cnt = eval_measures_cpu[9].item()
+    eval_measures_cpu /= cnt
+    print('Computing errors for {} eval samples'.format(int(cnt)))
+    print("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
                                                                                      'sq_rel', 'log_rms', 'd1', 'd2',
                                                                                      'd3'))
-        for i in range(8):
-            print('{:7.3f}, '.format(eval_measures_cpu[i]), end='')
+    for i in range(8):
+        print('{:7.3f}, '.format(eval_measures_cpu[i]), end='')
         print('{:7.3f}'.format(eval_measures_cpu[8]))
         return eval_measures_cpu
 
     return None
 
 
-def main_worker(gpu, ngpus_per_node, args):
+def main_worker(gpu, args):
     args.gpu = gpu
 
     if args.gpu is not None:
@@ -344,23 +343,23 @@ def main_worker(gpu, ngpus_per_node, args):
     num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
     print("Total number of learning parameters: {}".format(num_params_update))
 
-    if args.distributed:
-        if args.gpu is not None:
-            torch.cuda.set_device(args.gpu)
-            model.cuda(args.gpu)
-            args.batch_size = int(args.batch_size / ngpus_per_node)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-        else:
-            model.cuda()
-            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
-    else:
-        model = torch.nn.DataParallel(model)
-        model.cuda()
+    # if args.distributed:
+    #     if args.gpu is not None:
+    #         torch.cuda.set_device(args.gpu)
+    #         model.cuda(args.gpu)
+    #         args.batch_size = int(args.batch_size / ngpus_per_node)
+    #         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+    #     else:
+    #         model.cuda()
+    #         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+    # else:
+    model = torch.nn.DataParallel(model)
+    model.cuda()
 
-    if args.distributed:
-        print("Model Initialized on GPU: {}".format(args.gpu))
-    else:
-        print("Model Initialized")
+    # if args.distributed:
+    #     print("Model Initialized on GPU: {}".format(args.gpu))
+    # else:
+    print("Model Initialized")
 
     global_step = 0
     best_eval_measures_lower_better = torch.zeros(6).cpu() + 1e3
@@ -433,8 +432,8 @@ def main_worker(gpu, ngpus_per_node, args):
     epoch = global_step // steps_per_epoch
 
     while epoch < args.num_epochs:
-        if args.distributed:
-            dataloader.train_sampler.set_epoch(epoch)
+        # if args.distributed:
+        #     dataloader.train_sampler.set_epoch(epoch)
 
         for step, sample_batched in enumerate(dataloader.data):
             optimizer.zero_grad()
@@ -599,8 +598,8 @@ def main():
         # args.world_size = ngpus_per_node * args.world_size
          
     # else:
-    main_worker(args.gpu, ngpus_per_node, args)
+    main_worker(args.gpu, args)
 
 
 if __name__ == '__main__':
-    main()
+   main() 
