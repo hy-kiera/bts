@@ -96,7 +96,7 @@ def compute_errors(gt, pred):
     err = np.log(pred) - np.log(gt)
     silog = np.sqrt(np.mean(err ** 2) - np.mean(err) ** 2) * 100
     
-    err = np.abs(np.log10(pred) - np.log10(gt))
+    err = np.abs(np.log10(preyd) - np.log10(gt))
     log10 = np.mean(err)
     
     return silog, log10, abs_rel, sq_rel, rmse, rmse_log, d1, d2, d3

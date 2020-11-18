@@ -45,10 +45,10 @@ class BtsDataLoader(object):
     def __init__(self, args, mode):
         if mode == 'train':
             self.training_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
-            # if args.distributed:
-            #     self.train_sampler = torch.utils.data.distributed.DistributedSampler(self.training_samples)
-            # else:
-            self.train_sampler = None
+            if args.distributed:
+                self.train_sampler = torch.utils.data.distributed.DistributedSampler(self.training_samples)
+            else:
+                self.train_sampler = None
     
             self.data = DataLoader(self.training_samples, args.batch_size,
                                    shuffle=(self.train_sampler is None),
@@ -59,11 +59,11 @@ class BtsDataLoader(object):
 
         elif mode == 'online_eval':
             self.testing_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
-            # if args.distributed:
-                # self.eval_sampler = torch.utils.data.distributed.DistributedSampler(self.testing_samples, shuffle=False)
-                # self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
-            # else:
-            self.eval_sampler = None
+            if args.distributed:
+                self.eval_sampler = torch.utils.data.distributed.DistributedSampler(self.testing_samples, shuffle=False)
+                self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
+            else:
+                self.eval_sampler = None
             
             self.data = DataLoader(self.testing_samples, 1,
                                    shuffle=False,
@@ -91,11 +91,12 @@ class DataLoadPreprocess(Dataset):
         self.data = sio.loadmat(args.data_path)
 
         self.mode = mode
-        # self.transform = transform
-        # self.to_tensor = ToTensor
-        # self.is_for_online_eval = is_for_online_eval
+        self.transform = transform
+        self.to_tensor = ToTensor
+        self.is_for_online_eval = is_for_online_eval
         # self.size = np.array(self.data["UV"]).shape[0]
-        self.size = 191 # KinectPaper_Sparse
+        # self.size = 191 # KinectPaper_Sparse
+        self.size = 450 # flag
 
     def __getitem__(self, idx):
         # sample_path = self.filenames[idx]
@@ -137,19 +138,28 @@ class DataLoadPreprocess(Dataset):
 
             tmp = np.zeros((160, 160))
             image = np.dstack([images[idx], tmp])
+            # c1, c2, c3 = np.dsplit(image, image.shape[-1])
+            # image = np.concatenate((c3, c1, c2)) # C, H, W
+            image = np.transpose(image, (2, 0, 1))
+            image = np.asarray(image, dtype=np.float32)
 
-            depth_gt = depth_gts[idx]
+            depth_gt = depth_gts[idx] # 160, 160, 1
 
-            depth_gt = np.expand_dims(depth_gt, axis=2) # why 2...?
+            mask = np.transpose(depth_masks[idx], (2, 0, 1))
+            # mask = np.asarray(mask[idx])
+
+            # depth_gt = np.expand_dims(depth_gt, axis=2)
+            depth_gt = np.expand_dims(depth_gt, axis=0)
 
             if self.args.dataset == 'nyu':
                 depth_gt = depth_gt / 1000.0
             else:
-                depth_gt = depth_gt / 256.0
+                # depth_gt = depth_gt / 256.0 # sparse
+                depth_gt = depth_gt / (256.0 * 10.0 / 2.0) # flag_uv
 
             # image, depth_gt = self.random_crop(image, depth_gt, self.args.input_height, self.args.input_width)
             # image, depth_gt = self.train_preprocess(image, depth_gt)
-            sample = {'image': image, 'depth': depth_gt}
+            sample = {'image': image, 'depth': depth_gt, 'mask': mask}
         
         else:
             # if self.mode == 'online_eval':
@@ -157,10 +167,14 @@ class DataLoadPreprocess(Dataset):
             # else:
             #     data_path = self.args.data_path
 
-            # image_path = os.path.join(data_path, "./" + sample_path.split()[0])
+            # image_path = osy.path.join(data_path, "./" + sample_path.split()[0])
             # image = np.asarray(Image.open(image_path), dtype=np.float32) / 255.0
             tmp = np.zeros((160, 160))
             image = np.dstack([images[idx], tmp])
+            # c1, c2, c3 = np.dsplit(image, image.shape[-1])
+            # image = np.concatenate((c3, c1, c2)) # C, H, W
+            image = np.transpose(image, (2, 0, 1))
+            image = np.asarray(image, dtype=np.float32)
 
             if self.mode == 'online_eval':
                 # gt_path = self.args.gt_path_eval
@@ -169,6 +183,8 @@ class DataLoadPreprocess(Dataset):
                 try:
                     # depth_gt = Image.open(depth_path)
                     depth_gt = depth_gts[idx]
+                    mask = np.transpose(depth_masks[idx], (2, 0, 1))
+                    # mask = np.asarray(mask[idx])
                     has_valid_depth = True
                 except IOError:
                     depth_gt = False
@@ -176,11 +192,13 @@ class DataLoadPreprocess(Dataset):
 
                 if has_valid_depth:
                     # depth_gt = np.asarray(depth_gt, dtype=np.float32)
-                    depth_gt = np.expand_dims(depth_gt, axis=2)
+                    # depth_gt = np.expand_dims(depth_gt, axis=2)
+                    depth_gt = np.expand_dims(depth_gt, axis=0)
                     if self.args.dataset == 'nyu':
                         depth_gt = depth_gt / 1000.0
                     else:
-                        depth_gt = depth_gt / 256.0
+                        # depth_gt = depth_gt / 256.0 # sparse
+                        depth_gt = depth_gt / (256.0 * 10.0 / 2.0)  # flag_uv
 
             # if self.args.do_kb_crop is True:
             #     height = image.shape[0]
@@ -192,7 +210,7 @@ class DataLoadPreprocess(Dataset):
             #         depth_gt = depth_gt[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
             
             if self.mode == 'online_eval':
-                sample = {'image': image, 'depth': depth_gt, 'has_valid_depth': has_valid_depth}
+                sample = {'image': image, 'depth': depth_gt, 'has_valid_depth': has_valid_depth, 'mask': mask}
             else:
                 sample = {'image': image}
         

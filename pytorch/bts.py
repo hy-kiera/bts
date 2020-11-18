@@ -45,7 +45,8 @@ class silog_loss(nn.Module):
         self.variance_focus = variance_focus
 
     def forward(self, depth_est, depth_gt, mask):
-        d = torch.log(depth_est[mask]) - torch.log(depth_gt[mask])
+        # mask = mask.permute(0, 3, 1, 2)
+        d = torch.log(depth_est[mask]) - torch.log(depth_gt[mask]) # [2, 1, 160, 160] at 2nd time
         return torch.sqrt((d ** 2).mean() - self.variance_focus * (d.mean() ** 2)) * 10.0
 
 
@@ -302,7 +303,7 @@ class encoder(nn.Module):
         for k, v in self.base_model._modules.items():
             if 'fc' in k or 'avgpool' in k:
                 continue
-            print("v : {}".format(v))
+            # print("v : {}".format(v))
             feature = v(features[-1])
             features.append(feature)
             if any(x in k for x in self.feat_names):

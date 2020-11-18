@@ -14,11 +14,15 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>
 
+import os
+# GPU setting - use only device 4, 5
+# os.environ["CUDA_DEVICE_ORDER"] = "PCL_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "9"
+
 import time
 import argparse
 import datetime
 import sys
-import os
 
 import torch
 import torch.nn as nn
@@ -26,12 +30,14 @@ import torch.nn.utils as utils
 
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-# import torch.multiprocessing as mp
+import torch.multiprocessing as mp
 
 from tensorboardX import SummaryWriter
 
 import matplotlib
 import matplotlib.cm
+import numpy as np
+import scipy.io as sio
 import threading
 from tqdm import tqdm
 
@@ -44,7 +50,6 @@ def convert_arg_line_to_args(arg_line):
         if not arg.strip():
             continue
         yield arg
-
 
 parser = argparse.ArgumentParser(description='BTS PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
@@ -90,16 +95,16 @@ parser.add_argument('--do_kb_crop',                            help='if set, cro
 parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
 # Multi-gpu training
-# parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
-# parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
-# parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
-# parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
-# parser.add_argument('--dist_backend',              type=str,   help='distributed backend', default='nccl')
-parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=None)
-# parser.add_argument('--multiprocessing_distributed',           help='Use multi-processing distributed training to launch '
-#                                                                     'N processes per node, which has N GPUs. This is the '
-#                                                                     'fastest way to use PyTorch for either single node or '
-#                                                                     'multi node data parallel training', action='store_false',)
+parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
+parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
+parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
+parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
+parser.add_argument('--dist_backend',              type=str,   help='distributed backend', default='nccl')
+parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=4)
+parser.add_argument('--multiprocessing_distributed',           help='Use multi-processing distributed training to launch '
+                                                                    'N processes per node, which has N GPUs. This is the '
+                                                                    'fastest way to use PyTorch for either single node or '
+                                                                    'multi node data parallel training', action='store_false',)
 # Online eval
 parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
 parser.add_argument('--data_path_eval',            type=str,   help='path to the data for online evaluation', required=False)
@@ -254,6 +259,7 @@ def online_eval(model, dataloader_eval, gpu, ngpus):
             image = torch.autograd.Variable(eval_sample_batched['image'].cuda(gpu, non_blocking=True))
             gt_depth = eval_sample_batched['depth']
             has_valid_depth = eval_sample_batched['has_valid_depth']
+            mask = eval_sample_batched['mask']
             if not has_valid_depth:
                 print('Invalid depth. continue.')
                 continue
@@ -278,36 +284,36 @@ def online_eval(model, dataloader_eval, gpu, ngpus):
 
         valid_mask = np.logical_and(gt_depth > args.min_depth_eval, gt_depth < args.max_depth_eval)
 
-        if args.garg_crop or args.eigen_crop:
-            gt_height, gt_width = gt_depth.shape
-            eval_mask = np.zeros(valid_mask.shape)
-
-            if args.garg_crop:
-                eval_mask[int(0.40810811 * gt_height):int(0.99189189 * gt_height), int(0.03594771 * gt_width):int(0.96405229 * gt_width)] = 1
-
-            elif args.eigen_crop:
-                if args.dataset == 'kitti':
-                    eval_mask[int(0.3324324 * gt_height):int(0.91351351 * gt_height), int(0.0359477 * gt_width):int(0.96405229 * gt_width)] = 1
-                else:
-                    eval_mask[45:471, 41:601] = 1
-
-            valid_mask = np.logical_and(valid_mask, eval_mask)
+        # if args.garg_crop or args.eigen_crop:
+        #     gt_height, gt_width = gt_depth.shape
+        #     eval_mask = np.zeros(valid_mask.shape)
+        #
+        #     if args.garg_crop:
+        #         eval_mask[int(0.40810811 * gt_height):int(0.99189189 * gt_height), int(0.03594771 * gt_width):int(0.96405229 * gt_width)] = 1
+        #
+        #     elif args.eigen_crop:
+        #         if args.dataset == 'kitti':
+        #             eval_mask[int(0.3324324 * gt_height):int(0.91351351 * gt_height), int(0.0359477 * gt_width):int(0.96405229 * gt_width)] = 1
+        #         else:
+        #             eval_mask[45:471, 41:601] = 1
+        #
+        #     valid_mask = np.logical_and(valid_mask, eval_mask)
 
         measures = compute_errors(gt_depth[valid_mask], pred_depth[valid_mask])
 
         eval_measures[:9] += torch.tensor(measures).cuda(device=gpu)
         eval_measures[9] += 1
 
-    # if args.multiprocessing_distributed:
-    group = dist.new_group([i for i in range(ngpus)])
-    dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
+    if args.multiprocessing_distributed:
+        group = dist.new_group([i for i in range(ngpus)])
+        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
 
-    # if not args.multiprocessing_distributed or gpu == 0:
-    eval_measures_cpu = eval_measures.cpu()
-    cnt = eval_measures_cpu[9].item()
-    eval_measures_cpu /= cnt
-    print('Computing errors for {} eval samples'.format(int(cnt)))
-    print("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
+    if not args.multiprocessing_distributed or gpu == 0:
+        eval_measures_cpu = eval_measures.cpu()
+        cnt = eval_measures_cpu[9].item()
+        eval_measures_cpu /= cnt
+        print('Computing errors for {} eval samples'.format(int(cnt)))
+        print("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
                                                                                      'sq_rel', 'log_rms', 'd1', 'd2',
                                                                                      'd3'))
     for i in range(8):
@@ -318,18 +324,19 @@ def online_eval(model, dataloader_eval, gpu, ngpus):
     return None
 
 
-def main_worker(gpu, args):
+def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
+    # torch.cuda.set_device(args.gpu)
 
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
-    # if args.distributed:
-        # if args.dist_url == "env://" and args.rank == -1:
-            # args.rank = int(os.environ["RANK"])
-        # if args.multiprocessing_distributed:
-            # args.rank = args.rank * ngpus_per_node + gpu
-        # dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+    if args.distributed:
+        if args.dist_url == "env://" and args.rank == -1:
+            args.rank = int(os.environ["RANK"])
+        if args.multiprocessing_distributed:
+            args.rank = args.rank * ngpus_per_node + gpu
+        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
     # Create model
     model = BtsModel(args)
@@ -343,23 +350,28 @@ def main_worker(gpu, args):
     num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
     print("Total number of learning parameters: {}".format(num_params_update))
 
-    # if args.distributed:
-    #     if args.gpu is not None:
-    #         torch.cuda.set_device(args.gpu)
-    #         model.cuda(args.gpu)
-    #         args.batch_size = int(args.batch_size / ngpus_per_node)
-    #         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-    #     else:
-    #         model.cuda()
-    #         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
-    # else:
-    model = torch.nn.DataParallel(model)
-    model.cuda()
+    if args.distributed:
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            model.cuda(args.gpu)
+            args.batch_size = int(args.batch_size / ngpus_per_node)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+            # model = torch.nn.DataParallel(model)
+            # model = model
+        else:
+            model.cuda()
+            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+            # model = torch.nn.DataParallel(model)
+            # model = model
+    else:
+        model = torch.nn.DataParallel(model)
+        # model = model
+        model.cuda()
 
-    # if args.distributed:
-    #     print("Model Initialized on GPU: {}".format(args.gpu))
-    # else:
-    print("Model Initialized")
+    if args.distributed:
+        print("Model Initialized on GPU: {}".format(args.gpu))
+    else:
+        print("Model Initialized")
 
     global_step = 0
     best_eval_measures_lower_better = torch.zeros(6).cpu() + 1e3
@@ -404,14 +416,14 @@ def main_worker(gpu, args):
     dataloader_eval = BtsDataLoader(args, 'online_eval')
 
     # Logging
-    # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-    writer = SummaryWriter(args.log_directory + '/' + args.model_name + '/summaries', flush_secs=30)
-    if args.do_online_eval:
-        if args.eval_summary_directory != '':
-            eval_summary_path = os.path.join(args.eval_summary_directory, args.model_name)
-        else:
-            eval_summary_path = os.path.join(args.log_directory, 'eval')
-        eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        writer = SummaryWriter(args.log_directory + '/' + args.model_name + '/summaries', flush_secs=30)
+        if args.do_online_eval:
+            if args.eval_summary_directory != '':
+                eval_summary_path = os.path.join(args.eval_summary_directory, args.model_name)
+            else:
+                eval_summary_path = os.path.join(args.log_directory, 'eval')
+            eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
     silog_criterion = silog_loss(variance_focus=args.variance_focus)
 
@@ -431,9 +443,11 @@ def main_worker(gpu, args):
     num_total_steps = args.num_epochs * steps_per_epoch
     epoch = global_step // steps_per_epoch
 
+    depth_est_list = []
+
     while epoch < args.num_epochs:
-        # if args.distributed:
-        #     dataloader.train_sampler.set_epoch(epoch)
+        if args.distributed:
+            dataloader.train_sampler.set_epoch(epoch)
 
         for step, sample_batched in enumerate(dataloader.data):
             optimizer.zero_grad()
@@ -441,15 +455,16 @@ def main_worker(gpu, args):
 
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
+            mask = torch.autograd.Variable(sample_batched['mask'].cuda(args.gpu, non_blocking=True))
 
-            lpg8x8, lpg4x4, lpg2x2, reduc1x1, depth_est = model(image)
+            lpg8x8, lpg4x4, lpg2x2, reduc1x1, depth_est = model(image) # [2, 1, 160, 160]
 
             # cancel noise of depth_gt(max, min) - scale
-            """TODO"""
-            if args.dataset == 'nyu':
-                mask = depth_gt > 0.1
-            else:
-                mask = depth_gt > 1.0
+            # if args.dataset == 'nyu':
+                # depth_mask = depth_gt > 0.1
+            # else:
+            #     depth_mask = depth_gt > 1.0
+            # mask = depth_gt != np.inf
 
             loss = silog_criterion.forward(depth_est, depth_gt, mask.to(torch.bool))
             loss.backward()
@@ -459,11 +474,11 @@ def main_worker(gpu, args):
 
             optimizer.step()
 
-            # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-            print('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss))
-            if np.isnan(loss.cpu().item()):
-                print('NaN in loss occurred. Aborting training.')
-                return -1
+            if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                print('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss))
+                if np.isnan(loss.cpu().item()):
+                    print('NaN in loss occurred. Aborting training.')
+                    return -1
 
             duration += time.time() - before_op_time
             if global_step and global_step % args.log_freq == 0 and not model_just_loaded:
@@ -474,34 +489,36 @@ def main_worker(gpu, args):
                 duration = 0
                 time_sofar = (time.time() - start_time) / 3600
                 training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
-                # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                print("{}".format(args.model_name))
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                    print("{}".format(args.model_name))
                 print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
                 print(print_string.format(args.gpu, examples_per_sec, loss, var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
                 # Logging
-                # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                writer.add_scalar('silog_loss', loss, global_step)
-                writer.add_scalar('learning_rate', current_lr, global_step)
-                writer.add_scalar('var average', var_sum.item()/var_cnt, global_step)
-                depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)
-                for i in range(num_log_images):
-                    writer.add_image('depth_gt/image/{}'.format(i), normalize_result(1/depth_gt[i, :, :, :].data), global_step)
-                    writer.add_image('depth_est/image/{}'.format(i), normalize_result(1/depth_est[i, :, :, :].data), global_step)
-                    writer.add_image('reduc1x1/image/{}'.format(i), normalize_result(1/reduc1x1[i, :, :, :].data), global_step)
-                    writer.add_image('lpg2x2/image/{}'.format(i), normalize_result(1/lpg2x2[i, :, :, :].data), global_step)
-                    writer.add_image('lpg4x4/image/{}'.format(i), normalize_result(1/lpg4x4[i, :, :, :].data), global_step)
-                    writer.add_image('lpg8x8/image/{}'.format(i), normalize_result(1/lpg8x8[i, :, :, :].data), global_step)
-                    writer.add_image('image/image/{}'.format(i), inv_normalize(image[i, :, :, :]).data, global_step)
-                writer.flush()
+                # TODO : Add "silog, log10, abs_rel, sq_rel, rmse, rmse_log, d1, d2, d3"
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                    writer.add_scalar('silog_loss', loss, global_step)
+                    writer.add_scalar('learning_rate', current_lr, global_step)
+                    writer.add_scalar('var average', var_sum.item()/var_cnt, global_step)
+                    depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)
+                    for i in range(num_log_images):
+                        writer.add_image('depth_gt/image/{}'.format(i), normalize_result(1/depth_gt[i, :, :, :].data), global_step)
+                        writer.add_image('depth_est/image/{}'.format(i), normalize_result(1/depth_est[i, :, :, :].data), global_step)
+                        writer.add_image('reduc1x1/image/{}'.format(i), normalize_result(1/reduc1x1[i, :, :, :].data), global_step)
+                        writer.add_image('lpg2x2/image/{}'.format(i), normalize_result(1/lpg2x2[i, :, :, :].data), global_step)
+                        writer.add_image('lpg4x4/image/{}'.format(i), normalize_result(1/lpg4x4[i, :, :, :].data), global_step)
+                        writer.add_image('lpg8x8/image/{}'.format(i), normalize_result(1/lpg8x8[i, :, :, :].data), global_step)
+                        writer.add_image('image/image/{}'.format(i), inv_normalize(image[i, :]).data, global_step) # change to 0 channel
+                    writer.flush()
 
             if not args.do_online_eval and global_step and global_step % args.save_freq == 0:
-                # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                checkpoint = {'global_step': global_step,
-                                'model': model.state_dict(),
-                                'optimizer': optimizer.state_dict()}
-                torch.save(checkpoint, args.log_directory + '/' + args.model_name + '/model-{}'.format(global_step))
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                    checkpoint = {'global_step': global_step,
+                                    'model': model.state_dict(),
+                                    'optimizer': optimizer.state_dict()}
+                    torch.save(checkpoint, args.log_directory + '/' + args.model_name + '/model-{}'.format(global_step))
 
+            # Measurements Logging
             if args.do_online_eval and global_step and global_step % args.eval_freq == 0 and not model_just_loaded:
                 time.sleep(0.1)
                 model.eval()
@@ -547,7 +564,18 @@ def main_worker(gpu, args):
             model_just_loaded = False
             global_step += 1
 
+            if epoch == args.num_epochs - 1:
+                depth_est_list.append(depth_est.cpu().detach().numpy())
+
         epoch += 1
+
+    # Save depth_est
+    try:
+        # depth_est_cpu = depth_est.cpu()
+        # depth_est_numpy = depth_est_cpu.detach().numpy()
+        sio.savemat("./results/flag_uv.mat", {'depth_est': depth_est_list})
+    except IOError as e:
+        print("IOError : {0}".format(e))
 
 
 def main():
@@ -582,23 +610,31 @@ def main():
         os.system(command)
 
     torch.cuda.empty_cache()
-    # args.distributed = args.world_size > 1 or args.multiprocessing_distributed
+    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
-    # ngpus_per_node = torch.cuda.device_count()
+    # ngpus_per_node = 2
+    args.gpu = 0
+
+    # torch.cuda.set_device(4)
+    args.multiprocessing_distributed = False
+    # args.distributed = False
+
+    ngpus_per_node = torch.cuda.device_count() # 2
+    # ngpus_per_node = 1
     # if ngpus_per_node > 1 and not args.multiprocessing_distributed:
-        # print("This machine has more than 1 gpu. Please specify --multiprocessing_distributed, or set \'CUDA_VISIBLE_DEVICES=0\'")
-        # return -1
+    #     print("This machine has more than 1 gpu. Please specify --multiprocessing_distributed, or set \'CUDA_VISIBLE_DEVICES=0\'")
+    #     return -1
 
     if args.do_online_eval:
         print("You have specified --do_online_eval.")
         print("This will evaluate the model every eval_freq {} steps and save best models for individual eval metrics."
               .format(args.eval_freq))
 
-    # if args.multiprocessing_distributed:
-        # args.world_size = ngpus_per_node * args.world_size
-         
-    # else:
-    main_worker(args.gpu, args)
+    if args.multiprocessing_distributed:
+        args.world_size = ngpus_per_node * args.world_size
+        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
+    else:
+        main_worker(args.gpu, ngpus_per_node, args)
 
 
 if __name__ == '__main__':
